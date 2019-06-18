@@ -6,8 +6,7 @@
 FREEBSD_MIRROR="${FREEBSD_MIRROR:-ftp://ftp.freebsd.org/pub/FreeBSD}"
 
 usage() {
-	echo "Usage: $0 [-h] -d geom_provider [ -u dist_url ] [-s swap_partition_size] [-r opartition_size] [-c] [-C] [-l] [-4]"
-t
+	echo "Usage: $0 [-h] -d geom_provider [ -u dist_url ] -s swap_partition_size -r root_partition_size  -v var_partition_size [ -k ssh_key_url ] "
 }
 
 osarch() {
@@ -23,10 +22,11 @@ help() {
 
 }
 
-while getopts d:u:r:v:s:h o; do
+while getopts d:u:r:k:v:s:h o; do
 	case "$o" in
         	d) DEV="$DEV ${OPTARG##/dev/}" ;;
 		u) URL="${OPTARG}" ;;
+		k) SSH="${OPTARG}" ;;
                 r) ROOT="${OPTARG}" ;;
                 v) VAR="${OPTARG}" ;;
 		s) SWAP="${OPTARG}" ;;
@@ -87,13 +87,12 @@ if [ -n "${URL}" -a ! -d "${URL}" ]; then
 fi
 
 # Create GPT
-
 	echo "=== Creating GUID partitions on ${DEV} ==="
 	/sbin/gpart create -s GPT ${DEV}
 	/sbin/gpart add -t freebsd-boot -b 40 -s 512K ${DEV} 
-        /sbin/gpart add -t freebsd-swap -s ${SWAP} ${DEV}
-        /sbin/gpart add -t freebsd-ufs -s ${ROOT} ${DEV}
-        /sbin/gpart add -t freebsd-ufs -s ${VAR} ${DEV} 
+        /sbin/gpart add -t freebsd-swap -l swap -s ${SWAP} ${DEV}
+        /sbin/gpart add -t freebsd-ufs -l rootfs -s ${ROOT} ${DEV}
+        /sbin/gpart add -t freebsd-ufs -l varfs -s ${VAR} ${DEV} 
         /sbin/gpart bootcode -b /boot/pmbr -p /boot/gptboot -i 1 ${DEV}
 
  # Format them
@@ -101,14 +100,9 @@ fi
        /sbin/newfs -Uj ${DEV}p3  
        /sbin/newfs -Uj ${DEV}p4  
 
-       echo "=== Labeling partitions on ${DEV} ==="
-       /sbin/glabel label swap ${DEV}p2
-       /sbin/glabel label rootfs ${DEV}p3
-       /sbin/glabel label varfs ${DEV}p4
-
 #Mount the disks and extract the setup
 
-mount /dev/label/rootfs /mnt && mkdir /mnt/var && mount /dev/label/varfs /mnt/var
+mount /dev/gpt/rootfs /mnt && mkdir /mnt/var && mount /dev/gpt/varfs /mnt/var
 
 echo "=== Extracting Kernel ==="
 tar -zxpf /tmp/kernel.txz -C /mnt
@@ -122,9 +116,9 @@ echo "sshd_enable=\"YES\"" >> /mnt/etc/rc.conf
 echo "PermitRootLogin yes" >> /mnt/etc/ssh/sshd_config
 
 cat << EOF > /mnt/etc/fstab
-/dev/label/swap none            swap    sw      0       0
-/dev/label/rootfs       /               ufs     rw,noatime      1       1
-/dev/label/varfs        /var            ufs     rw,noatime      2       2
+/dev/gpt/swap none            swap    sw      0       0
+/dev/gpt/rootfs       /               ufs     rw,noatime      1       1
+/dev/gpt/varfs        /var            ufs     rw,noatime      2       2
 EOF
 
 cat << EOF > /mnt/etc/resolv.conf
@@ -134,13 +128,14 @@ nameserver 8.8.4.4
 options timeout:1 attempts:5 rotate
 EOF
 
-echo "Deploy Root's authorized_keys"
-mkdir /mnt/root/.ssh/
-chmod 700 /mnt/root/.ssh
-fetch -o /mnt/root/.ssh/authorized_keys http://deadfish.longcount.org/bootstrap/ssh-keys/authorized_keys
-
-
-echo "================== Done =================="
-
+if [ "${SSH}" ]; then
+   echo "Deploy Root's authorized_keys"
+   mkdir /mnt/root/.ssh/
+   chmod 700 /mnt/root/.ssh
+   fetch -o /mnt/root/.ssh/authorized_keys ${SSH}
+   echo "================== Done =================="
+else
+  echo "==> Set root password or deploy a ssh public key before rebooting"
+fi
 
 echo "=== Unmount /mnt/var and /mnt before rebooting ==="
